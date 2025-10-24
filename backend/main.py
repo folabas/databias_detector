@@ -1,24 +1,20 @@
-from typing import Optional
+"""FastAPI entrypoint exposing routes only.
 
-import io
-import pandas as pd
+Routes delegate to modular core components for analysis, explainability, and utilities.
+"""
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from typing import Optional
 
-from .bias_analysis import (
-    analyze_bias, 
-    detect_sensitive_features, 
-    detect_binary_columns, 
-    detect_target_candidates,
-    analyze_dataset_structure,
-    generate_bias_explanation,
-    explain_feature_influence,
-)
+from .core.schema import ColumnsResponse, AnalyzeResponse, ExplainRequest, ExplainResponse
+from .core.utils import detect_binary_columns, detect_target_candidates, analyze_dataset_structure
+from .core.analysis import analyze_bias, suggest_bias_corrections
+from .core.explainability import explain_feature_influence
+from .core.llm_explainer import generate_bias_explanation
 
-app = FastAPI(title="DataBias Detector API", version="0.1.0")
+app = FastAPI(title="DataBias Detector API")
 
-# Allow local dev from Streamlit
+# CORS for local Streamlit
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,104 +23,65 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-class ColumnsResponse(BaseModel):
-    columns: list[str]
-    detected_sensitive: list[str]
-    binary_columns: list[str]
-    target_candidates: list[str]
-    dataset_analysis: dict
-
-
-class AnalyzeResponse(BaseModel):
-    sensitive_feature: Optional[str]
-    target: Optional[str]
-    metrics: dict
-    fairness_score: Optional[float]
-    component_scores: dict
-    available_metrics: list[str]
-    error: Optional[str] = None
-    # Optional extras
-    explainability: Optional[dict] = None
-
-
-class ExplainRequest(BaseModel):
-    metrics: dict
-    sensitive_feature: str
-
-
-class ExplainResponse(BaseModel):
-    explanation: str
-
-
 @app.get("/")
 def root():
-    return {"message": "DataBias Detector API running!"}
-
+    return {"message": "DataBias Detector API", "routes": ["/upload", "/analyze", "/explain"]}
 
 @app.post("/upload", response_model=ColumnsResponse)
-async def upload_file(file: UploadFile = File(...)):
-    # Stream CSV into DataFrame without loading entire bytes into memory
-    file.file.seek(0)
-    df = pd.read_csv(file.file)
-    
-    # Perform comprehensive dataset analysis
-    columns = df.columns.tolist()
-    detected_sensitive = detect_sensitive_features(df)
-    binary_columns = detect_binary_columns(df)
-    target_candidates = detect_target_candidates(df)
-    dataset_analysis = analyze_dataset_structure(df)
-    
-    return {
-        "columns": columns, 
-        "detected_sensitive": detected_sensitive,
-        "binary_columns": binary_columns,
-        "target_candidates": target_candidates,
-        "dataset_analysis": dataset_analysis
-    }
+async def upload(file: UploadFile = File(...)):
+    csv_bytes = await file.read()
+    import pandas as pd
+    df = pd.read_csv(pd.io.common.BytesIO(csv_bytes))
 
+    # Intelligent analysis
+    binary_cols = detect_binary_columns(df)
+    targets = detect_target_candidates(df)
+    dataset_info = analyze_dataset_structure(df)
 
-@app.post("/analyze", response_model=AnalyzeResponse)
-async def analyze_bias_endpoint(
-    file: UploadFile = File(...),
-    sensitive_feature: Optional[str] = Form(None),
-    target: Optional[str] = Form(None),
-    predictions_col: Optional[str] = Form(None),
-):
-    # Stream CSV into DataFrame
-    file.file.seek(0)
-    df = pd.read_csv(file.file)
+    # Sensitive features heuristic (simple keywords)
+    sensitive_keywords = ["gender", "sex", "race", "ethnicity", "age", "marital", "religion", "nationality"]
+    detected_sensitive = [c for c in df.columns if any(k in c.lower() for k in sensitive_keywords)]
 
-    result = analyze_bias(
-        df=df,
-        sensitive_feature=sensitive_feature,
-        target_col=target,
-        predictions_col=predictions_col,
+    return ColumnsResponse(
+        detected_sensitive=detected_sensitive,
+        binary_columns=binary_cols,
+        target_candidates=targets,
+        dataset_analysis=dataset_info,
     )
 
-    # Add friendly errors
-    if "error" in result:
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze(
+    file: UploadFile = File(...),
+    sensitive_feature: str = Form(...),
+    target: str = Form(...),
+    predictions_col: Optional[str] = Form(None),
+):
+    csv_bytes = await file.read()
+    result = analyze_bias(csv_bytes, sensitive_feature, target, predictions_col)
+
+    if result.get("error"):
         return AnalyzeResponse(
-            sensitive_feature=sensitive_feature,
-            target=target,
-            metrics={},
             fairness_score=None,
+            metrics={},
             component_scores={},
-            available_metrics=[],
             error=result["error"],
         )
 
-    # Include explainability (feature influence) when possible
-    explainability = None
-    if target and target in df.columns:
-        try:
-            explainability = explain_feature_influence(df, target)
-        except Exception:
-            explainability = {"feature_importances": [], "explanation_available": False}
+    # Include explainability and suggestions
+    import pandas as pd
+    df = pd.read_csv(pd.io.common.BytesIO(csv_bytes))
+    explainability = explain_feature_influence(df, target, predictions_col)
+    suggestions = suggest_bias_corrections(df, sensitive_feature, target, predictions_col, result.get("metrics", {}))
 
-    return AnalyzeResponse(**result, explainability=explainability)
+    return AnalyzeResponse(
+        fairness_score=result["fairness_score"],
+        metrics=result["metrics"],
+        component_scores=result["component_scores"],
+        explainability=explainability,
+        suggestions=suggestions,
+    )
 
 @app.post("/explain", response_model=ExplainResponse)
-async def explain_bias(req: ExplainRequest):
-    text = generate_bias_explanation(req.metrics, req.sensitive_feature)
+async def explain(payload: ExplainRequest):
+    text = generate_bias_explanation(metrics=payload.metrics, sensitive_feature=payload.sensitive_feature)
     return ExplainResponse(explanation=text)

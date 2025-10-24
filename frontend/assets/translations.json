@@ -1,0 +1,32 @@
+{
+  "en": {
+    "title": "🧮 DataBias Detector",
+    "upload": "Upload your dataset",
+    "upload_csv": "Upload a CSV",
+    "analyze": "Analyze Bias",
+    "ai_expl": "AI Explanation",
+    "feat_influence": "Feature Influence (Explainability)",
+    "lang": "Language",
+    "theme": "Dark mode"
+  },
+  "fr": {
+    "title": "🧮 Détecteur de Biais",
+    "upload": "Téléchargez votre ensemble de données",
+    "upload_csv": "Téléchargez un CSV",
+    "analyze": "Analyser le biais",
+    "ai_expl": "Explication IA",
+    "feat_influence": "Influence des caractéristiques (Explicabilité)",
+    "lang": "Langue",
+    "theme": "Mode sombre"
+  },
+  "es": {
+    "title": "🧮 Detector de Sesgo",
+    "upload": "Sube tu conjunto de datos",
+    "upload_csv": "Sube un CSV",
+    "analyze": "Analizar sesgo",
+    "ai_expl": "Explicación IA",
+    "feat_influence": "Influencia de características (Explicabilidad)",
+    "lang": "Idioma",
+    "theme": "Modo oscuro"
+  }
+}

@@ -1,0 +1,7 @@
+/* Dark/Light theme overrides for Streamlit UI */
+/* Apply minimal styles; controlled by a checkbox in the app */
+
+.dark .stApp { background-color: #111827; color: #e5e7eb; }
+.dark .stMarkdown, .dark .stText, .dark .stDataFrame, .dark .stSelectbox, .dark .stButton { color: #e5e7eb !important; }
+.dark .stButton>button { background-color: #374151; color: #e5e7eb; border: 1px solid #4b5563; }
+.dark .stSelectbox>div>div>select { background-color: #1f2937; color: #e5e7eb; }
