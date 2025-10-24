@@ -11,7 +11,9 @@ from .bias_analysis import (
     detect_sensitive_features, 
     detect_binary_columns, 
     detect_target_candidates,
-    analyze_dataset_structure
+    analyze_dataset_structure,
+    generate_bias_explanation,
+    explain_feature_influence,
 )
 
 app = FastAPI(title="DataBias Detector API", version="0.1.0")
@@ -42,6 +44,17 @@ class AnalyzeResponse(BaseModel):
     component_scores: dict
     available_metrics: list[str]
     error: Optional[str] = None
+    # Optional extras
+    explainability: Optional[dict] = None
+
+
+class ExplainRequest(BaseModel):
+    metrics: dict
+    sensitive_feature: str
+
+
+class ExplainResponse(BaseModel):
+    explanation: str
 
 
 @app.get("/")
@@ -101,4 +114,17 @@ async def analyze_bias_endpoint(
             error=result["error"],
         )
 
-    return AnalyzeResponse(**result)
+    # Include explainability (feature influence) when possible
+    explainability = None
+    if target and target in df.columns:
+        try:
+            explainability = explain_feature_influence(df, target)
+        except Exception:
+            explainability = {"feature_importances": [], "explanation_available": False}
+
+    return AnalyzeResponse(**result, explainability=explainability)
+
+@app.post("/explain", response_model=ExplainResponse)
+async def explain_bias(req: ExplainRequest):
+    text = generate_bias_explanation(req.metrics, req.sensitive_feature)
+    return ExplainResponse(explanation=text)

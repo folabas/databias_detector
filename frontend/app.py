@@ -14,10 +14,35 @@ except Exception:
 # Upload limits configured via .streamlit/config.toml
 
 st.set_page_config(page_title="DataBias Detector", page_icon="🧮", layout="wide")
-st.title("🧮 DataBias Detector")
-st.write("Upload your dataset, select a sensitive feature, and analyze fairness.")
 
-uploaded_file = st.file_uploader("Upload a CSV", type=["csv"])
+# Multilingual UI support
+TRANSLATIONS = {
+    "en": {"title": "🧮 DataBias Detector", "upload": "Upload your dataset", "upload_csv": "Upload a CSV", "analyze": "Analyze Bias", "ai_expl": "AI Explanation", "feat_influence": "Feature Influence (Explainability)", "lang": "Language", "theme": "Dark mode"},
+    "fr": {"title": "🧮 Détecteur de Biais", "upload": "Téléchargez votre ensemble de données", "upload_csv": "Téléchargez un CSV", "analyze": "Analyser le biais", "ai_expl": "Explication IA", "feat_influence": "Influence des caractéristiques (Explicabilité)", "lang": "Langue", "theme": "Mode sombre"},
+    "es": {"title": "🧮 Detector de Sesgo", "upload": "Sube tu conjunto de datos", "upload_csv": "Sube un CSV", "analyze": "Analizar sesgo", "ai_expl": "Explicación IA", "feat_influence": "Influencia de características (Explicabilidad)", "lang": "Idioma", "theme": "Modo oscuro"},
+}
+lang = st.sidebar.selectbox(TRANSLATIONS["en"]["lang"], options=["en","fr","es"], index=0, help="Choose your interface language.")
+T = TRANSLATIONS.get(lang, TRANSLATIONS["en"]) 
+
+# Dark mode toggle (CSS-based)
+st.sidebar.checkbox(T["theme"], key="dark_mode", help="Toggle a simple dark theme.")
+if st.session_state.get("dark_mode"):
+    st.markdown(
+        """
+        <style>
+        .stApp { background-color: #111827; color: #e5e7eb; }
+        .stMarkdown, .stText, .stDataFrame, .stSelectbox, .stButton { color: #e5e7eb !important; }
+        .stButton>button { background-color: #374151; color: #e5e7eb; border: 1px solid #4b5563; }
+        .stSelectbox>div>div>select { background-color: #1f2937; color: #e5e7eb; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+st.title(T["title"])
+st.write(T["upload"])
+
+uploaded_file = st.file_uploader(T["upload_csv"], type=["csv"], help="CSV only; small files recommended.")
 
 
 # All detection logic is now handled by the intelligent backend analysis
@@ -156,7 +181,7 @@ if uploaded_file:
                 st.write("**Predictions: None selected**")
                 st.write("Target will be used as proxy")
 
-    if st.button("Analyze Bias", type="primary"):
+    if st.button(T["analyze"], type="primary"):
         st.info("Analyzing…")
         files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/csv")}
         data = {
@@ -180,8 +205,15 @@ if uploaded_file:
             metrics = result.get("metrics", {})
             comp_scores = result.get("component_scores", {})
 
+            # Emoji feedback beside fairness score
             if fairness_score is not None:
-                st.success(f"Fairness Score: {fairness_score:.2f} / 100")
+                if fairness_score >= 80:
+                    status_emoji = "🟢"
+                elif fairness_score >= 60:
+                    status_emoji = "🟡"
+                else:
+                    status_emoji = "🔴"
+                st.success(f"{status_emoji} Fairness Score: {fairness_score:.2f} / 100")
             else:
                 # Provide friendlier guidance when metrics are unavailable
                 nuniq_target = (
@@ -228,25 +260,35 @@ if uploaded_file:
                 )
 
             st.subheader("Metric Breakdown")
-            st.write({k: round(v, 4) if v is not None else None for k, v in metrics.items()})
+            # Include additional metrics in table view
+            st.write({k: (round(v, 4) if isinstance(v, (int, float)) else v) for k, v in metrics.items()})
 
-            # Visualizations
-            st.subheader("Representation by Sensitive Feature")
-            if sensitive_feature in df.columns:
-                fig = px.pie(df, names=sensitive_feature, title=f"Distribution of {sensitive_feature}")
-                st.plotly_chart(fig, use_container_width=True)
+            # Call AI explanation endpoint
+            try:
+                explain_payload = {"metrics": metrics, "sensitive_feature": sensitive_feature}
+                ex_res = requests.post(f"{BACKEND_URL}/explain", json=explain_payload, timeout=30)
+                if ex_res.status_code == 200:
+                    explanation_text = ex_res.json().get("explanation", "")
+                    st.subheader(T["ai_expl"])
+                    st.write(explanation_text)
+                else:
+                    st.info("AI explanation unavailable (configure HUGGINGFACE_API_TOKEN or OLLAMA_URL).")
+            except Exception:
+                st.info("AI explanation unavailable (configure HUGGINGFACE_API_TOKEN or OLLAMA_URL).")
 
-            # Outcome rate by group (bar chart)
-            if sensitive_feature in df.columns and target_col in df.columns:
+            # Feature influence (Explainability)
+            explainability = result.get("explainability")
+            if explainability and explainability.get("feature_importances"):
+                st.expander(T["feat_influence"], expanded=False).write("")
+                imp = explainability["feature_importances"]
+                imp_df = pd.DataFrame(imp)
                 try:
-                    # Compute mean of binary-like target per group (works as rate if binary)
-                    # If target isn't binary, this is the average numeric value per group.
-                    group_rates = df.groupby(sensitive_feature)[target_col].mean(numeric_only=True)
-                    bar_df = group_rates.reset_index().rename(columns={target_col: "rate"})
-                    fig_bar = px.bar(bar_df, x=sensitive_feature, y="rate", title=f"Outcome rate by {sensitive_feature}")
-                    st.plotly_chart(fig_bar, use_container_width=True)
+                    fig_imp = px.bar(imp_df.head(20), x="feature", y="importance", title=T["feat_influence"]) 
+                    st.plotly_chart(fig_imp, use_container_width=True)
                 except Exception:
-                    pass
+                    st.dataframe(imp_df.head(20))
+            elif explainability:
+                st.info(explainability.get("reason", "Explainability not available."))
 
             st.subheader("Explanation")
             st.write(

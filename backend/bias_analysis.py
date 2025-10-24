@@ -286,65 +286,86 @@ def _ensure_binary_series(s: pd.Series) -> Optional[pd.Series]:
     return None
 
 
-def compute_demographic_parity(
+def compute_statistical_parity_difference(
     df: pd.DataFrame,
     sensitive_feature: str,
     target_col: str,
 ) -> Optional[float]:
-    """Compute demographic parity difference using Fairlearn.
-
-    Requires a binary target column. If target is not binary, attempts coercion.
+    """Statistical Parity Difference: max(group positive rate) - min(group positive rate).
+    Requires binary-coercible target.
     """
     if sensitive_feature not in df.columns or target_col not in df.columns:
         return None
-
-    y = df[target_col]
-    y_bin = _ensure_binary_series(y)
+    y_bin = _ensure_binary_series(df[target_col])
     if y_bin is None:
         return None
-
-    # DPD signature needs y_true, y_pred; DPD does not depend on y_true, but
-    # we pass the same binary series for both to satisfy signature.
-    sens = df[sensitive_feature]
     try:
-        dpd = demographic_parity_difference(y_true=y_bin, y_pred=y_bin, sensitive_features=sens)
-        return float(dpd)
+        rates = df.assign(_y=y_bin).groupby(sensitive_feature)['_y'].mean(numeric_only=True)
+        if len(rates) < 2:
+            return None
+        return float(rates.max() - rates.min())
     except Exception:
         return None
 
 
-def compute_equal_opportunity(
+def compute_disparate_impact_ratio(
+    df: pd.DataFrame,
+    sensitive_feature: str,
+    target_col: str,
+) -> Optional[float]:
+    """Disparate Impact Ratio: min(group positive rate) / max(group positive rate).
+    Ideal ≈ 1.0. Returns None if cannot compute.
+    """
+    if sensitive_feature not in df.columns or target_col not in df.columns:
+        return None
+    y_bin = _ensure_binary_series(df[target_col])
+    if y_bin is None:
+        return None
+    try:
+        rates = df.assign(_y=y_bin).groupby(sensitive_feature)['_y'].mean(numeric_only=True)
+        if len(rates) < 2:
+            return None
+        mx = float(rates.max())
+        mn = float(rates.min())
+        if mx == 0:
+            return None
+        return float(mn / mx)
+    except Exception:
+        return None
+
+
+def compute_predictive_equality_difference(
     df: pd.DataFrame,
     sensitive_feature: str,
     y_true_col: str,
     y_pred_col: Optional[str] = None,
 ) -> Optional[float]:
-    """Compute equal opportunity difference.
-
-    If y_pred_col is None, attempts to use y_true as a naive proxy; returns None
-    if binary coercion fails.
+    """Predictive Equality Difference: difference in false positive rates across groups.
+    Requires binary y_true and binary/coercible y_pred.
+    If y_pred_col is None, returns None.
     """
     if sensitive_feature not in df.columns or y_true_col not in df.columns:
         return None
-
-    y_true = df[y_true_col]
-    y_true_bin = _ensure_binary_series(y_true)
-    if y_true_bin is None:
+    if not y_pred_col or y_pred_col not in df.columns:
         return None
-
-    if y_pred_col and y_pred_col in df.columns:
-        y_pred = df[y_pred_col]
-        y_pred_bin = _ensure_binary_series(y_pred)
-        if y_pred_bin is None:
-            return None
-    else:
-        # Fallback proxy (not ideal, but allows MVP operation)
-        y_pred_bin = y_true_bin
-
-    sens = df[sensitive_feature]
+    y_true_bin = _ensure_binary_series(df[y_true_col])
+    y_pred_bin = _ensure_binary_series(df[y_pred_col])
+    if y_true_bin is None or y_pred_bin is None:
+        return None
     try:
-        eod = equal_opportunity_difference(y_true=y_true_bin, y_pred=y_pred_bin, sensitive_features=sens)
-        return float(eod)
+        data = df.assign(_yt=y_true_bin, _yp=y_pred_bin)
+        # False positives: yp=1 while yt=0
+        def fpr(group):
+            g = group
+            negatives = (g['_yt'] == 0).sum()
+            if negatives == 0:
+                return 0.0
+            fp = ((g['_yp'] == 1) & (g['_yt'] == 0)).sum()
+            return float(fp) / float(negatives)
+        rates = data.groupby(sensitive_feature).apply(fpr)
+        if len(rates) < 2:
+            return None
+        return float(rates.max() - rates.min())
     except Exception:
         return None
 
@@ -353,17 +374,22 @@ def aggregate_fairness_score(metrics: Dict[str, Optional[float]]) -> Dict[str, A
     """Aggregate available metric differences into a 0–100 fairness score.
 
     Scoring: for each metric difference `d` (ideal is 0), score_i = max(0, 100 - min(100, abs(d) * 100)).
-    Final score is the average over available metrics.
+    For ratio metrics like Disparate Impact Ratio (ideal is 1), use d = abs(1 - r).
     """
-    diffs = [v for v in metrics.values() if v is not None]
-    if not diffs:
-        return {"fairness_score": None, "component_scores": {}, "available_metrics": []}
-
+    diffs = []
     comp_scores = {}
     for name, val in metrics.items():
         if val is None:
             continue
-        comp_scores[name] = max(0.0, 100.0 - min(100.0, abs(val) * 100.0))
+        if name == 'disparate_impact_ratio':
+            d = abs(1.0 - float(val))
+        else:
+            d = abs(float(val))
+        diffs.append(d)
+        comp_scores[name] = max(0.0, 100.0 - min(100.0, d * 100.0))
+
+    if not diffs:
+        return {"fairness_score": None, "component_scores": {}, "available_metrics": []}
 
     fairness = float(np.mean(list(comp_scores.values()))) if comp_scores else None
     return {
@@ -409,10 +435,16 @@ def analyze_bias(
 
     dpd = compute_demographic_parity(df, sensitive_feature, target_col)
     eod = compute_equal_opportunity(df, sensitive_feature, target_col, predictions_col)
+    spd = compute_statistical_parity_difference(df, sensitive_feature, target_col)
+    dirv = compute_disparate_impact_ratio(df, sensitive_feature, target_col)
+    ped = compute_predictive_equality_difference(df, sensitive_feature, target_col, predictions_col)
 
     metrics = {
         "demographic_parity_difference": dpd,
         "equal_opportunity_difference": eod,
+        "statistical_parity_difference": spd,
+        "disparate_impact_ratio": dirv,
+        "predictive_equality_difference": ped,
     }
     agg = aggregate_fairness_score(metrics)
 
@@ -425,3 +457,142 @@ def analyze_bias(
         "available_metrics": agg.get("available_metrics"),
     }
     return result
+
+
+def generate_bias_explanation(metrics: Dict[str, Any], sensitive_feature: str) -> str:
+    """Generate a plain-English bias explanation using a free LLM API.
+    - Uses Hugging Face Inference API when HUGGINGFACE_API_TOKEN is set.
+    - Optionally supports Ollama via OLLAMA_URL if provided.
+    - Gracefully falls back to a templated summary if no API is configured.
+    """
+    import os, json, requests
+    dpd = metrics.get('demographic_parity_difference')
+    eod = metrics.get('equal_opportunity_difference')
+    spd = metrics.get('statistical_parity_difference')
+    dirv = metrics.get('disparate_impact_ratio')
+    ped = metrics.get('predictive_equality_difference')
+
+    base_summary = (
+        f"Analysis across '{sensitive_feature}' groups: "
+        + (f"DPD={dpd:.3f}. " if isinstance(dpd, (int, float)) else "")
+        + (f"SPD={spd:.3f}. " if isinstance(spd, (int, float)) else "")
+        + (f"DIR={dirv:.3f} (ideal≈1). " if isinstance(dirv, (int, float)) else "")
+        + (f"EOD={eod:.3f}. " if isinstance(eod, (int, float)) else "")
+        + (f"PED={ped:.3f}. " if isinstance(ped, (int, float)) else "")
+    )
+    prompt = (
+        "You are a helpful data fairness assistant. Given these metric values, "
+        "explain in one short paragraph what they indicate about potential bias, "
+        "using plain language and percentages where helpful.\n\n"
+        f"Sensitive feature: {sensitive_feature}\n"
+        f"Metrics JSON: {json.dumps({k: (float(v) if v is not None else None) for k,v in metrics.items()})}\n"
+        "Explain the main takeaway and suggest a simple next step."
+    )
+
+    # Try Hugging Face Inference API
+    hf_token = os.environ.get('HUGGINGFACE_API_TOKEN')
+    hf_model = os.environ.get('HUGGINGFACE_MODEL', 'google/flan-t5-large')
+    if hf_token:
+        try:
+            headers = {"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"}
+            payload = {"inputs": prompt}
+            url = f"https://api-inference.huggingface.co/models/{hf_model}"
+            resp = requests.post(url, headers=headers, json=payload, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and data:
+                    text = data[0].get('generated_text') or data[0].get('summary_text')
+                else:
+                    text = data.get('generated_text') or str(data)
+                if text:
+                    return text.strip()
+        except Exception:
+            pass
+
+    # Try Ollama (local) if available
+    ollama_url = os.environ.get('OLLAMA_URL')  # e.g., http://localhost:11434/api/generate
+    ollama_model = os.environ.get('OLLAMA_MODEL', 'mistral')
+    if ollama_url:
+        try:
+            payload = {"model": ollama_model, "prompt": prompt}
+            resp = requests.post(ollama_url, json=payload, timeout=30)
+            if resp.status_code == 200:
+                # Ollama streams; try to assemble
+                text = resp.text
+                if text:
+                    return text.strip()
+        except Exception:
+            pass
+
+    # Fallback templated explanation
+    parts = []
+    if isinstance(dpd, (int, float)):
+        parts.append(f"Demographic parity difference of {dpd:.2f} suggests outcome rates differ by {abs(dpd)*100:.1f}% across groups.")
+    if isinstance(spd, (int, float)):
+        parts.append(f"Statistical parity difference of {spd:.2f} indicates selection rate gap of {abs(spd)*100:.1f}%.")
+    if isinstance(dirv, (int, float)):
+        parts.append(f"Disparate impact ratio of {dirv:.2f} (ideal≈1) implies relative selection rates differ.")
+    if isinstance(eod, (int, float)):
+        parts.append(f"Equal opportunity difference of {eod:.2f} suggests true positive rates differ.")
+    if isinstance(ped, (int, float)):
+        parts.append(f"Predictive equality difference of {ped:.2f} indicates false positive rates vary.")
+    if not parts:
+        parts.append("Insufficient metrics to assess bias; provide a binary target and optionally predictions.")
+    parts.append("Consider reviewing group-level rates, balancing datasets, or adjusting decision thresholds.")
+    return " ".join(parts)
+
+
+def explain_feature_influence(df: pd.DataFrame, target_col: str) -> Dict[str, Any]:
+    """Compute simple SHAP-based feature influence for outcomes.
+    - Tries to use scikit-learn for a lightweight model and SHAP for importances.
+    - Gracefully degrades to correlation-based proxy if SHAP or sklearn missing.
+    Returns a dict with feature_importances list of {feature, importance}.
+    """
+    try:
+        import shap  # type: ignore
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.model_selection import train_test_split
+    except Exception:
+        # Fallback: correlation-based proxy importance (numeric only)
+        try:
+            y = _ensure_binary_series(df[target_col])
+            if y is None:
+                return {"feature_importances": [], "explanation_available": False, "reason": "Target not binary."}
+            X = df.drop(columns=[target_col])
+            num_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
+            imps = []
+            for c in num_cols:
+                try:
+                    corr = abs(np.corrcoef(X[c].fillna(0), y.fillna(0))[0,1])
+                    imps.append({"feature": c, "importance": float(corr)})
+                except Exception:
+                    continue
+            imps.sort(key=lambda x: x['importance'], reverse=True)
+            return {"feature_importances": imps[:20], "explanation_available": False, "reason": "SHAP/sklearn not available; used correlation proxy."}
+        except Exception:
+            return {"feature_importances": [], "explanation_available": False, "reason": "Explainability failed."}
+
+    # Prepare data
+    y = _ensure_binary_series(df[target_col])
+    if y is None:
+        return {"feature_importances": [], "explanation_available": False, "reason": "Target not binary."}
+    X = pd.get_dummies(df.drop(columns=[target_col]), drop_first=True)
+    X = X.fillna(0)
+
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(X, y.fillna(0), test_size=0.3, random_state=42)
+        model = RandomForestClassifier(n_estimators=50, random_state=42)
+        model.fit(X_train, y_train)
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X_test)
+        # For binary classification, shap_values is list; take class 1
+        if isinstance(shap_values, list) and len(shap_values) > 1:
+            sv = shap_values[1]
+        else:
+            sv = shap_values
+        mean_abs = np.abs(sv).mean(axis=0)
+        imps = [{"feature": f, "importance": float(mean_abs[i])} for i, f in enumerate(X.columns)]
+        imps.sort(key=lambda x: x['importance'], reverse=True)
+        return {"feature_importances": imps[:20], "explanation_available": True}
+    except Exception:
+        return {"feature_importances": [], "explanation_available": False, "reason": "SHAP computation failed."}

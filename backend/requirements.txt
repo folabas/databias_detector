@@ -10,3 +10,5 @@ streamlit
 matplotlib
 seaborn
 requests
+huggingface_hub
+shap
