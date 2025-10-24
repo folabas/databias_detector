@@ -1,0 +1,6 @@
+gender,region,outcome
+male,north,1
+female,south,0
+female,north,1
+male,south,0
+male,north,1
