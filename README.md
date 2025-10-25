@@ -22,30 +22,63 @@ databias_detector/
 
 ## Quick Start
 
-### 1) Create venv and install deps (Windows)
+## Detailed Setup (Windows)
+
+### Create and activate virtual environment
 ```powershell
-python -m venv venv
-./venv/Scripts/python -m pip install -r backend/requirements.txt
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
 ```
 
-### 2) Run Backend
+### Install dependencies
 ```powershell
-./venv/Scripts/python -m uvicorn backend.main:app --reload
+pip install -r backend\requirements.txt
 ```
-Visit `http://127.0.0.1:8000/docs` for Swagger UI.
 
-### 3) Run Frontend
+## Environment Variables (.env at project root)
+Create a `.env` file in the project root to configure backend behavior.
+```env
+# Backend service and thresholds
+BACKEND_URL=http://127.0.0.1:8000
+SPD_THRESHOLD=0.1
+DIR_MIN_RATIO=0.8
+PED_THRESHOLD=0.05
+GROUP_RATIO_MIN=0.5
+TARGET_RATIO_MIN=0.6
+ALWAYS_ON_TIPS=true
+
+# Optional services
+HUGGINGFACE_API_TOKEN=<your_token_if_any>
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+```
+These map to `backend/core/config.py` and are read on startup.
+
+## Run Backend (FastAPI)
 ```powershell
-./venv/Scripts/streamlit run frontend/app.py
+uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
-Visit the shown local URL (usually `http://localhost:8501`).
+Check API docs at `http://127.0.0.1:8000/docs`.
 
-## Usage
-- Upload a CSV (e.g., `data/sample.csv`).
-- Select a sensitive feature and a binary target column.
-- Click "Analyze Bias" to see fairness score, metric breakdown, and charts.
+## Run Frontend (Streamlit)
+```powershell
+streamlit run frontend\app.py --server.port 8504
+```
+Visit `http://localhost:8504/`.
 
-## Notes
-- Equal Opportunity Difference requires binary `y_true` and `y_pred`. If predictions are not available, the app falls back to using `y_true` as a proxy.
-- For non-binary targets, some metrics may be unavailable.
-- Extend with additional metrics, PDF export, and persistence as needed.
+## Upload Limits
+Streamlit upload limits are set in `.streamlit/config.toml`:
+```toml
+server.maxUploadSize = 1024
+server.maxMessageSize = 1024
+```
+
+## Tests
+```powershell
+python -m pytest backend\tests -q
+```
+
+## Troubleshooting
+- Backend unreachable: ensure the backend is running at `http://127.0.0.1:8000` and the frontend `BACKEND_URL` points to it.
+- Streamlit not updating: stop and rerun the command; clear browser cache if needed.
+- Virtual environment not active: the PowerShell prompt should show `(.venv)`; if not, run `.\.venv\Scripts\Activate.ps1`.
+- Firewall prompts: allow Python to communicate on local ports.

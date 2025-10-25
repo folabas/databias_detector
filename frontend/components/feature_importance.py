@@ -12,7 +12,7 @@ def render_feature_importance(explainability: dict, title: str):
         imp_df = pd.DataFrame(imp)
         try:
             fig_imp = px.bar(imp_df.head(20), x="feature", y="importance", title=title)
-            st.plotly_chart(fig_imp, use_container_width=True)
+            st.plotly_chart(fig_imp, config={"responsive": True, "displayModeBar": True})
         except Exception:
             st.dataframe(imp_df.head(20))
     elif explainability:

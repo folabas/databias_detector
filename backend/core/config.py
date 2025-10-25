@@ -31,4 +31,14 @@ class Settings:
     OLLAMA_BASE_URL: Optional[str] = os.environ.get("OLLAMA_BASE_URL")
     BACKEND_URL: str = os.environ.get("BACKEND_URL", "http://127.0.0.1:8000")
 
+    # --- Suggestion thresholds (configurable; defaults mirror previous heuristics) ---
+    SPD_THRESHOLD: float = float(os.environ.get("SPD_THRESHOLD", "0.1"))
+    DIR_MIN_RATIO: float = float(os.environ.get("DIR_MIN_RATIO", "0.8"))
+    PED_THRESHOLD: float = float(os.environ.get("PED_THRESHOLD", "0.05"))
+    GROUP_RATIO_MIN: float = float(os.environ.get("GROUP_RATIO_MIN", "0.5"))
+    TARGET_RATIO_MIN: float = float(os.environ.get("TARGET_RATIO_MIN", "0.6"))
+
+    # Toggle to include general process tips in suggestions
+    ALWAYS_ON_TIPS: bool = os.environ.get("ALWAYS_ON_TIPS", "true").lower() in ("1", "true", "yes", "y")
+
 settings = Settings()

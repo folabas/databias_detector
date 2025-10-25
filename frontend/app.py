@@ -57,8 +57,7 @@ if uploaded_file:
         detected_sensitive, binary_columns, target_candidates, dataset_analysis = [], [], [], {}
 
     st.subheader("Data Preview")
-    st.dataframe(df.head())
-
+    st.dataframe(df, width='stretch')
     st.write("Columns:", list(df.columns))
 
     # Get comprehensive dataset analysis from intelligent backend
@@ -208,7 +207,20 @@ if uploaded_file:
             render_bias_results(fairness_score, metrics, comp_scores, df, target_col, (predictions_col if predictions_col != "<none>" else None))
             render_ai_explanation(BACKEND_URL, metrics, sensitive_feature, "AI Explanation") 
             explainability = result.get("explainability")
-            st.expander("Feature Influence (Explainability)", expanded=False).write("")
+            expander = st.expander("Feature Influence (Explainability)", expanded=False)
+            method = None
+            if isinstance(explainability, dict):
+                reason = explainability.get("reason")
+                if reason and "Correlation" in reason:
+                    method = "Correlation-based"
+                elif reason is None and explainability.get("feature_importances"):
+                    method = "SHAP-based"
+                elif reason:
+                    method = reason
+            if method:
+                expander.write(f"Method used: {method}")
+            else:
+                expander.write("Method used: Explainability unavailable")
             render_feature_importance(explainability, "Feature Influence (Explainability)") 
 
             # Bias correction suggestions
