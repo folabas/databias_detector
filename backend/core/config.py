@@ -4,8 +4,8 @@ Centralizes environment variables for external services and server URLs.
 """
 from typing import Optional
 import os
-
-# Attempt to load variables from a project-level .env file if present
+ 
+ 
 try:
     from dotenv import load_dotenv  # type: ignore
     _ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -13,10 +13,8 @@ try:
     if os.path.exists(_ENV_PATH):
         load_dotenv(_ENV_PATH)
     else:
-        # Fall back to default search (current working dir)
         load_dotenv()
 except Exception:
-    # If python-dotenv isn't installed or any error occurs, just skip
     pass
 
 class Settings:
@@ -40,5 +38,18 @@ class Settings:
 
     # Toggle to include general process tips in suggestions
     ALWAYS_ON_TIPS: bool = os.environ.get("ALWAYS_ON_TIPS", "true").lower() in ("1", "true", "yes", "y")
+
+    # --- Metric toggles and integration flags ---
+    USE_FAIRLEARN: bool = os.environ.get("USE_FAIRLEARN", "false").lower() in ("1", "true", "yes", "y")
+    INCLUDE_EQUAL_OPPORTUNITY: bool = os.environ.get("INCLUDE_EQUAL_OPPORTUNITY", "true").lower() in ("1", "true", "yes", "y")
+    INCLUDE_EQUALIZED_ODDS: bool = os.environ.get("INCLUDE_EQUALIZED_ODDS", "true").lower() in ("1", "true", "yes", "y")
+    INCLUDE_DEMOGRAPHIC_PARITY: bool = os.environ.get("INCLUDE_DEMOGRAPHIC_PARITY", "true").lower() in ("1", "true", "yes", "y")
+
+    WEIGHT_SPD: float = float(os.environ.get("WEIGHT_SPD", "0.3"))
+    WEIGHT_DIR: float = float(os.environ.get("WEIGHT_DIR", "0.25"))
+    WEIGHT_PED: float = float(os.environ.get("WEIGHT_PED", "0.2"))
+    WEIGHT_EO: float = float(os.environ.get("WEIGHT_EO", "0.15"))
+    WEIGHT_EQODDS: float = float(os.environ.get("WEIGHT_EQODDS", "0.1"))
+    WEIGHT_DP: float = float(os.environ.get("WEIGHT_DP", "0.1"))
 
 settings = Settings()

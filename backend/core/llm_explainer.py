@@ -56,7 +56,7 @@ def generate_bias_explanation(metrics: Dict[str, float], sensitive_feature: Opti
                     return data["generated_text"]
         except Exception:
             pass
-    # Try Ollama
+    
     if settings.OLLAMA_BASE_URL:
         try:
             prompt = (
@@ -74,5 +74,4 @@ def generate_bias_explanation(metrics: Dict[str, float], sensitive_feature: Opti
                     return data["response"]
         except Exception:
             pass
-    # Fallback template
     return _template_explanation(metrics, sensitive_feature)

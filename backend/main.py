@@ -13,8 +13,7 @@ from .core.explainability import explain_feature_influence
 from .core.llm_explainer import generate_bias_explanation
 
 app = FastAPI(title="DataBias Detector API")
-
-# CORS for local Streamlit
+ 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -67,7 +66,6 @@ async def analyze(
             error=result["error"],
         )
 
-    # Include explainability and suggestions
     import pandas as pd
     df = pd.read_csv(pd.io.common.BytesIO(csv_bytes))
     explainability = explain_feature_influence(df, target, predictions_col)

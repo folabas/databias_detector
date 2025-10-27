@@ -7,8 +7,6 @@ import pandas as pd
 import numpy as np
 from .config import settings
 
-# --- Helpers ---
-
 def _ensure_binary_series(s: pd.Series) -> Optional[pd.Series]:
     """Coerce a series with ≤2 unique non-null values to binary {0,1}.
 
@@ -28,7 +26,7 @@ def _ensure_binary_series(s: pd.Series) -> Optional[pd.Series]:
         return s.map(lambda x: mapping.get(x, 0))
     return None
 
-# New: sanitize sensitive groups to avoid extremes from rare/misc categories
+ 
 
 def _sanitize_sensitive_groups(df: pd.DataFrame, sensitive: str) -> pd.DataFrame:
     try:
@@ -56,7 +54,7 @@ def _sanitize_sensitive_groups(df: pd.DataFrame, sensitive: str) -> pd.DataFrame
     except Exception:
         return df
 
-# --- Fairness metrics ---
+ 
 
 def compute_statistical_parity_difference(df: pd.DataFrame, sensitive: str, target: str) -> float:
     """Difference in positive outcome rates between groups.
@@ -175,22 +173,220 @@ def compute_predictive_equality_difference(df: pd.DataFrame, sensitive: str, tar
         return 0.0
     return float(np.max(fprates) - np.min(fprates))
 
-# --- Aggregate scoring ---
 
-def aggregate_fairness_score(spd: float, diratio: float, ped: float) -> Tuple[float, Dict[str, float]]:
-    """Aggregate into a 0–100 fairness score with component weights."""
-    # Normalize components: lower is better for SPD/PED, higher is better for DIR
-    comp_spd = max(0.0, 1.0 - min(1.0, abs(spd)))
-    comp_dir = max(0.0, min(1.0, diratio))
-    comp_ped = max(0.0, 1.0 - min(1.0, abs(ped)))
-    # Weighted average
-    weights = {"SPD": 0.4, "DIR": 0.3, "PED": 0.3}
-    score = 100.0 * (
-        comp_spd * weights["SPD"] + comp_dir * weights["DIR"] + comp_ped * weights["PED"]
-    )
-    return score, {"SPD": comp_spd, "DIR": comp_dir, "PED": comp_ped}
+def compute_equal_opportunity_difference(
+    df: pd.DataFrame,
+    sensitive: str,
+    target: str,
+    predictions_col: Optional[str]
+) -> float:
+    """Difference in true positive rates (TPR gap) across groups.
 
-# --- Analysis orchestrator ---
+    Requires predictions; robustly bins y_true and y_pred into 0/1.
+    """
+    if sensitive not in df.columns or target not in df.columns or not predictions_col:
+        return 0.0
+    if predictions_col not in df.columns:
+        return 0.0
+    df_s = _sanitize_sensitive_groups(df, sensitive)
+    groups = df_s[sensitive].dropna().unique()
+    if len(groups) < 2:
+        return 0.0
+    # y_true binning
+    y_true = df_s[target]
+    if not pd.api.types.is_numeric_dtype(y_true):
+        y_true_bin = _ensure_binary_series(y_true)
+        if y_true_bin is None:
+            return 0.0
+        y_true = y_true_bin
+    else:
+        uniq = pd.unique(y_true.dropna())
+        if len(uniq) > 2:
+            y_true = (y_true >= 0.5).astype(int)
+        else:
+            y_true = y_true.astype(int)
+    # y_pred binning
+    y_pred = df_s[predictions_col]
+    if pd.api.types.is_numeric_dtype(y_pred):
+        if y_pred.dropna().nunique() > 2:
+            y_pred = (y_pred >= 0.5).astype(int)
+        else:
+            y_pred = y_pred.astype(int)
+    else:
+        y_pred_bin = _ensure_binary_series(y_pred)
+        if y_pred_bin is None:
+            return 0.0
+        y_pred = y_pred_bin
+    tprates = []
+    for g in groups:
+        idx = (df_s[sensitive] == g)
+        yt = y_true[idx]
+        yp = y_pred[idx]
+        if yt.empty:
+            continue
+        positives = (yt == 1).sum()
+        if positives == 0:
+            tprates.append(0.0)
+            continue
+        tp = ((yp == 1) & (yt == 1)).sum()
+        rate = float(tp) / float(positives)
+        tprates.append(rate)
+    if not tprates:
+        return 0.0
+    return float(np.max(tprates) - np.min(tprates))
+
+def compute_equalized_odds_difference(
+    df: pd.DataFrame,
+    sensitive: str,
+    target: str,
+    predictions_col: Optional[str]
+) -> float:
+    """Equalized odds difference: max gap across TPR and FPR between groups.
+
+    Returns max(|TPR_max-TPR_min|, |FPR_max-FPR_min|).
+    """
+    if sensitive not in df.columns or target not in df.columns or not predictions_col:
+        return 0.0
+    if predictions_col not in df.columns:
+        return 0.0
+    df_s = _sanitize_sensitive_groups(df, sensitive)
+    groups = df_s[sensitive].dropna().unique()
+    if len(groups) < 2:
+        return 0.0
+    # y_true binning
+    y_true = df_s[target]
+    if not pd.api.types.is_numeric_dtype(y_true):
+        y_true_bin = _ensure_binary_series(y_true)
+        if y_true_bin is None:
+            return 0.0
+        y_true = y_true_bin
+    else:
+        uniq = pd.unique(y_true.dropna())
+        if len(uniq) > 2:
+            y_true = (y_true >= 0.5).astype(int)
+        else:
+            y_true = y_true.astype(int)
+    # y_pred binning
+    y_pred = df_s[predictions_col]
+    if pd.api.types.is_numeric_dtype(y_pred):
+        if y_pred.dropna().nunique() > 2:
+            y_pred = (y_pred >= 0.5).astype(int)
+        else:
+            y_pred = y_pred.astype(int)
+    else:
+        y_pred_bin = _ensure_binary_series(y_pred)
+        if y_pred_bin is None:
+            return 0.0
+        y_pred = y_pred_bin
+    tprates = []
+    fprates = []
+    for g in groups:
+        idx = (df_s[sensitive] == g)
+        yt = y_true[idx]
+        yp = y_pred[idx]
+        if yt.empty:
+            continue
+        positives = (yt == 1).sum()
+        negatives = (yt == 0).sum()
+        # TPR
+        if positives == 0:
+            tpr = 0.0
+        else:
+            tp = ((yp == 1) & (yt == 1)).sum()
+            tpr = float(tp) / float(positives)
+        # FPR
+        if negatives == 0:
+            fpr = 0.0
+        else:
+            fp = ((yp == 1) & (yt == 0)).sum()
+            fpr = float(fp) / float(negatives)
+        tprates.append(tpr)
+        fprates.append(fpr)
+    if not tprates or not fprates:
+        return 0.0
+    tpr_gap = float(np.max(tprates) - np.min(tprates))
+    fpr_gap = float(np.max(fprates) - np.min(fprates))
+    return float(max(tpr_gap, fpr_gap))
+
+def compute_demographic_parity_difference(
+    df: pd.DataFrame,
+    sensitive: str,
+    predictions_col: Optional[str]
+) -> float:
+    """Demographic parity difference on predictions: gap in predicted positives.
+
+    Uses y_pred only. Robust binning to 0/1.
+    """
+    if sensitive not in df.columns or not predictions_col:
+        return 0.0
+    if predictions_col not in df.columns:
+        return 0.0
+    df_s = _sanitize_sensitive_groups(df, sensitive)
+    groups = df_s[sensitive].dropna().unique()
+    if len(groups) < 2:
+        return 0.0
+    y_pred = df_s[predictions_col]
+    if pd.api.types.is_numeric_dtype(y_pred):
+        if y_pred.dropna().nunique() > 2:
+            y_pred = (y_pred >= 0.5).astype(int)
+        else:
+            y_pred = y_pred.astype(int)
+    else:
+        y_pred_bin = _ensure_binary_series(y_pred)
+        if y_pred_bin is None:
+            return 0.0
+        y_pred = y_pred_bin
+    rates = []
+    for g in groups:
+        idx = (df_s[sensitive] == g)
+        yp = y_pred[idx]
+        if yp.empty:
+            continue
+        pos_rate = float(yp.mean())
+        rates.append(pos_rate)
+    if not rates:
+        return 0.0
+    return float(np.max(rates) - np.min(rates))
+
+ 
+
+def aggregate_fairness_score_dynamic(metrics: Dict[str, float]) -> Tuple[float, Dict[str, float]]:
+    """Dynamic aggregator using configured flags and weights.
+
+    Normalizes each component into [0,1], then weighted average -> [0,100].
+    """
+    comps: Dict[str, float] = {}
+    weights: Dict[str, float] = {}
+
+    # Always include base metrics if present
+    if "statistical_parity_difference" in metrics:
+        comps["SPD"] = max(0.0, 1.0 - min(1.0, abs(metrics["statistical_parity_difference"])) )
+        weights["SPD"] = getattr(settings, "WEIGHT_SPD", 0.4)
+    if "disparate_impact_ratio" in metrics:
+        comps["DIR"] = max(0.0, min(1.0, float(metrics["disparate_impact_ratio"])) )
+        weights["DIR"] = getattr(settings, "WEIGHT_DIR", 0.3)
+    if "predictive_equality_difference" in metrics:
+        comps["PED"] = max(0.0, 1.0 - min(1.0, abs(metrics["predictive_equality_difference"])) )
+        weights["PED"] = getattr(settings, "WEIGHT_PED", 0.3)
+
+    # Optional predictions-based metrics
+    if settings.INCLUDE_EQUAL_OPPORTUNITY and "equal_opportunity_difference" in metrics:
+        comps["EO"] = max(0.0, 1.0 - min(1.0, abs(metrics["equal_opportunity_difference"])) )
+        weights["EO"] = getattr(settings, "WEIGHT_EO", 0.15)
+    if settings.INCLUDE_EQUALIZED_ODDS and "equalized_odds_difference" in metrics:
+        comps["EqOdds"] = max(0.0, 1.0 - min(1.0, abs(metrics["equalized_odds_difference"])) )
+        weights["EqOdds"] = getattr(settings, "WEIGHT_EQODDS", 0.1)
+    if settings.INCLUDE_DEMOGRAPHIC_PARITY and "demographic_parity_difference" in metrics:
+        comps["DP"] = max(0.0, 1.0 - min(1.0, abs(metrics["demographic_parity_difference"])) )
+        weights["DP"] = getattr(settings, "WEIGHT_DP", 0.1)
+
+    wsum = sum(weights.values())
+    if wsum <= 0:
+        return 0.0, comps
+    score = 100.0 * sum(comps[k] * weights[k] for k in comps) / wsum
+    return float(score), comps
+
+ 
 
 def analyze_bias(csv_bytes: bytes, sensitive_feature: str, target: str, predictions_col: Optional[str] = None) -> Dict[str, object]:
     """Run fairness analysis on a CSV payload.
@@ -204,12 +400,23 @@ def analyze_bias(csv_bytes: bytes, sensitive_feature: str, target: str, predicti
         spd = compute_statistical_parity_difference(df, sensitive_feature, target)
         diratio = compute_disparate_impact_ratio(df, sensitive_feature, target)
         ped = compute_predictive_equality_difference(df, sensitive_feature, target, predictions_col)
-        fairness_score, component_scores = aggregate_fairness_score(spd, diratio, ped)
         metrics = {
             "statistical_parity_difference": spd,
             "disparate_impact_ratio": diratio,
             "predictive_equality_difference": ped,
         }
+        # Add predictions-based metrics when available
+        if predictions_col and (predictions_col in df.columns):
+            metrics["demographic_parity_difference"] = compute_demographic_parity_difference(
+                df, sensitive_feature, predictions_col
+            )
+            metrics["equal_opportunity_difference"] = compute_equal_opportunity_difference(
+                df, sensitive_feature, target, predictions_col
+            )
+            metrics["equalized_odds_difference"] = compute_equalized_odds_difference(
+                df, sensitive_feature, target, predictions_col
+            )
+        fairness_score, component_scores = aggregate_fairness_score_dynamic(metrics)
         return {
             "fairness_score": fairness_score,
             "metrics": metrics,
@@ -218,7 +425,7 @@ def analyze_bias(csv_bytes: bytes, sensitive_feature: str, target: str, predicti
     except Exception as e:
         return {"error": f"Analysis failed: {e}"}
 
-# --- Correction suggestions ---
+ 
 
 def suggest_bias_corrections(
     df: pd.DataFrame,

@@ -1,16 +1,16 @@
-# Add component imports and CSS loader at top
 import requests
 import pandas as pd
 import streamlit as st
 import os
 import json
-# Robust imports to handle both package and script execution
+ 
 try:
     from frontend.components.dataset_preview import render_dataset_preview
     from frontend.components.bias_results import render_bias_results
     from frontend.components.ai_explanation import render_ai_explanation
     from frontend.components.feature_importance import render_feature_importance
     from frontend.components.correction_suggestions import render_correction_suggestions
+    from frontend.components.group_visualizations import render_group_visualizations
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
@@ -20,30 +20,25 @@ except ModuleNotFoundError:
     from components.ai_explanation import render_ai_explanation
     from components.feature_importance import render_feature_importance
     from components.correction_suggestions import render_correction_suggestions
+    from components.group_visualizations import render_group_visualizations
 
-# Resolve backend URL without requiring Streamlit secrets
+ 
 try:
     BACKEND_URL = st.secrets["backend_url"]
 except Exception:
     BACKEND_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:8000")
 
-# Upload limits configured via .streamlit/config.toml
-
 st.set_page_config(page_title="DataBias Detector", page_icon="🧮", layout="wide")
 
-# Simple static UI labels (language and dark mode removed)
 st.title("🧮 DataBias Detector")
 st.write("Upload your dataset")
 
 uploaded_file = st.file_uploader("Upload a CSV", type=["csv"], help="CSV only; small files recommended.")
 
-
-# All detection logic is now handled by the intelligent backend analysis
-
+ 
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
-    # Use component for preview + summary
     try:
         files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/csv")}
         resp = requests.post(f"{BACKEND_URL}/upload", files=files, timeout=20)
@@ -60,19 +55,16 @@ if uploaded_file:
     st.dataframe(df, width='stretch')
     st.write("Columns:", list(df.columns))
 
-    # Get comprehensive dataset analysis from intelligent backend
     try:
         files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/csv")}
         resp = requests.post(f"{BACKEND_URL}/upload", files=files, timeout=20)
         resp_json = resp.json()
         
-        # Extract intelligent analysis results
         detected_sensitive = resp_json.get("detected_sensitive", [])
         binary_columns = resp_json.get("binary_columns", [])
         target_candidates = resp_json.get("target_candidates", [])
         dataset_analysis = resp_json.get("dataset_analysis", {})
         
-        # Show intelligent analysis summary
         if dataset_analysis:
             with st.expander("🧠 Intelligent Dataset Analysis", expanded=True):
                 col1, col2, col3 = st.columns(3)
@@ -104,13 +96,10 @@ if uploaded_file:
         target_candidates = []
         dataset_analysis = {}
     
-    # Prefer binary target candidates
     binary_target_candidates = [col for col in target_candidates if col in binary_columns]
 
-    # UI selections with tooltips
     st.markdown("### Column Selection")
     
-    # Sensitive feature selection with tooltip
     col1, col2 = st.columns([0.95, 0.05])
     with col1:
         sensitive_default = (
@@ -123,13 +112,10 @@ if uploaded_file:
             help="The demographic attribute to analyze for bias (e.g., gender, race, age group). This should be a categorical column representing different groups you want to compare for fairness."
         )
     
-    # Target/Outcome selection with intelligent filtering
     col1, col2 = st.columns([0.95, 0.05])
     with col1:
-        # Use binary columns if available, otherwise show all with warning
         if binary_columns:
             target_options = binary_columns
-            # Default to best binary target candidate
             if binary_target_candidates:
                 target_default = binary_target_candidates[0]
             else:
@@ -145,7 +131,6 @@ if uploaded_file:
             help="The outcome you want to measure bias in. Must be binary (exactly 2 unique values like Yes/No, 0/1, True/False). This represents what you're trying to predict or the decision being made."
         )
     
-    # Predictions selection with tooltip
     col1, col2 = st.columns([0.95, 0.05])
     with col1:
         predictions_col = st.selectbox(
@@ -155,13 +140,11 @@ if uploaded_file:
             help="Optional: The model's predictions or scores. If provided, should be binary (0/1) or probability scores. If not provided, the target column will be used as a proxy for predictions in the analysis."
         )
 
-    # Show column information
     if binary_columns:
         st.info(f"✅ **Binary columns detected:** {', '.join(binary_columns)}")
     else:
         st.warning("⚠️ **No binary columns detected.** Fairness metrics require binary targets. Consider preprocessing your data to create binary columns (e.g., age >= 30 → 1, else 0).")
     
-    # Show selected column stats
     with st.expander("📊 Selected Column Statistics"):
         col1, col2, col3 = st.columns(3)
         
@@ -223,10 +206,12 @@ if uploaded_file:
                 expander.write("Method used: Explainability unavailable")
             render_feature_importance(explainability, "Feature Influence (Explainability)") 
 
-            # Bias correction suggestions
+            viz_expander = st.expander("Rich Visualizations", expanded=True)
+            with viz_expander:
+                render_group_visualizations(df, sensitive_feature, target_col, (predictions_col if predictions_col != "<none>" else None))
+
             render_correction_suggestions(result.get("suggestions", []))
 
-            # Export results as JSON
             st.download_button(
                 label="Download results.json",
                 data=json.dumps(result, indent=2),

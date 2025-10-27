@@ -1,7 +1,3 @@
-"""Placeholder tests for /explain endpoint.
-
-Ensures the endpoint responds with an explanation string.
-"""
 from fastapi.testclient import TestClient
 from backend.main import app
 

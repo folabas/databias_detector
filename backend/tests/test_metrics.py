@@ -1,7 +1,3 @@
-"""Placeholder tests for fairness metrics.
-
-Add real assertions as metrics evolve.
-"""
 import pandas as pd
 from backend.core.analysis import (
     compute_statistical_parity_difference,
