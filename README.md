@@ -61,7 +61,7 @@ Check API docs at `http://127.0.0.1:8000/docs`.
 
 ## Run Frontend (Streamlit)
 ```powershell
-streamlit run frontend\app.py --server.port 8504
+streamlit run frontend\app.py --server.port 8502
 ```
 Visit `http://localhost:8504/`.
 
