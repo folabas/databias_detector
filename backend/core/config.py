@@ -52,4 +52,13 @@ class Settings:
     WEIGHT_EQODDS: float = float(os.environ.get("WEIGHT_EQODDS", "0.1"))
     WEIGHT_DP: float = float(os.environ.get("WEIGHT_DP", "0.1"))
 
+    # --- Explainability performance controls ---
+    # Toggle SHAP-based explainability (set to false to force correlation fallback)
+    USE_SHAP_EXPLAINABILITY: bool = os.environ.get("USE_SHAP_EXPLAINABILITY", "true").lower() in ("1", "true", "yes", "y")
+    # Limit rows for explainability to keep compute bounded on small instances
+    EXPLAIN_MAX_ROWS: int = int(os.environ.get("EXPLAIN_MAX_ROWS", "2000"))
+    # RandomForest hyperparameters for SHAP path (smaller = faster)
+    EXPLAIN_RF_TREES: int = int(os.environ.get("EXPLAIN_RF_TREES", "50"))
+    EXPLAIN_RF_MAX_DEPTH: int = int(os.environ.get("EXPLAIN_RF_MAX_DEPTH", "6"))
+
 settings = Settings()

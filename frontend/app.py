@@ -3,6 +3,8 @@ import pandas as pd
 import streamlit as st
 import os
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
  
 try:
     from frontend.components.dataset_preview import render_dataset_preview
@@ -28,6 +30,104 @@ try:
 except Exception:
     BACKEND_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:8000")
 
+# Configurable wait for delayed backend upload processing
+def get_upload_wait_config():
+    try:
+        max_wait = int(st.secrets.get("upload_max_wait_seconds", 100))
+    except Exception:
+        max_wait = int(os.environ.get("UPLOAD_MAX_WAIT_SECONDS", "100"))
+    try:
+        req_timeout = int(st.secrets.get("upload_request_timeout_seconds", max_wait))
+    except Exception:
+        req_timeout = int(os.environ.get("UPLOAD_REQUEST_TIMEOUT_SECONDS", str(max_wait)))
+    return max_wait, req_timeout
+
+
+def upload_with_delay_handling(uploaded_file, backend_url: str):
+    """
+    Post the uploaded file to the backend /upload with a delay-tolerant UI.
+    - Shows status message and countdown progress while waiting
+    - Ends early if backend responds before max wait
+    - Logs actual vs expected timing in session_state
+    - Errors clearly if backend exceeds max wait
+    """
+    max_wait, req_timeout = get_upload_wait_config()
+
+    status_ph = st.empty()
+    progress_ph = st.progress(0)
+    countdown_ph = st.empty()
+
+    start_time = time.time()
+    if "upload_timings" not in st.session_state:
+        st.session_state["upload_timings"] = []
+
+    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/csv")}
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            requests.post,
+            f"{backend_url}/upload",
+            files=files,
+            timeout=req_timeout,
+        )
+
+        # Poll until done or until max_wait reached
+        while True:
+            elapsed = time.time() - start_time
+            remaining = int(max(0, max_wait - elapsed))
+            percentage = int(min(100, (elapsed / max_wait) * 100)) if max_wait > 0 else 100
+
+            status_ph.info("Processing upload… the backend may be delayed.")
+            progress_ph.progress(percentage)
+            countdown_ph.write(f"Waiting: {remaining}s remaining")
+
+            if future.done():
+                try:
+                    resp = future.result()
+                    resp_json = resp.json()
+                    total = time.time() - start_time
+                    st.session_state["upload_timings"].append(
+                        {
+                            "expected_wait": max_wait,
+                            "actual_elapsed": round(total, 2),
+                            "completed": True,
+                            "status_code": resp.status_code,
+                        }
+                    )
+                    status_ph.success(f"Upload processed in {int(total)}s.")
+                    progress_ph.progress(100)
+                    countdown_ph.write(f"Completed in {int(total)}s (expected {max_wait}s)")
+                    return resp_json
+                except Exception as e:
+                    total = time.time() - start_time
+                    st.session_state["upload_timings"].append(
+                        {
+                            "expected_wait": max_wait,
+                            "actual_elapsed": round(total, 2),
+                            "completed": False,
+                            "error": str(e),
+                        }
+                    )
+                    status_ph.error(f"Upload processing failed: {e}")
+                    return None
+
+            if elapsed >= max_wait:
+                total = time.time() - start_time
+                st.session_state["upload_timings"].append(
+                    {
+                        "expected_wait": max_wait,
+                        "actual_elapsed": round(total, 2),
+                        "completed": False,
+                        "error": "max_wait_exceeded",
+                    }
+                )
+                status_ph.error(
+                    "Upload processing exceeded the maximum wait time. Please try again or increase the wait limit."
+                )
+                return None
+
+            time.sleep(0.5)
+
 st.set_page_config(page_title="DataBias Detector", page_icon="🧮", layout="wide")
 
 st.title("🧮 DataBias Detector")
@@ -39,62 +139,43 @@ uploaded_file = st.file_uploader("Upload a CSV", type=["csv"], help="CSV only; s
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
-    try:
-        files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/csv")}
-        resp = requests.post(f"{BACKEND_URL}/upload", files=files, timeout=20)
-        resp_json = resp.json()
+
+    resp_json = upload_with_delay_handling(uploaded_file, BACKEND_URL)
+    if resp_json:
         detected_sensitive = resp_json.get("detected_sensitive", [])
         binary_columns = resp_json.get("binary_columns", [])
         target_candidates = resp_json.get("target_candidates", [])
         dataset_analysis = resp_json.get("dataset_analysis", {})
-    except Exception as e:
-        st.warning(f"Could not get intelligent analysis from backend: {e}")
+    else:
+        st.warning("Could not get intelligent analysis from backend within the wait window.")
         detected_sensitive, binary_columns, target_candidates, dataset_analysis = [], [], [], {}
 
     st.subheader("Data Preview")
     st.dataframe(df, width='stretch')
     st.write("Columns:", list(df.columns))
 
-    try:
-        files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/csv")}
-        resp = requests.post(f"{BACKEND_URL}/upload", files=files, timeout=20)
-        resp_json = resp.json()
-        
-        detected_sensitive = resp_json.get("detected_sensitive", [])
-        binary_columns = resp_json.get("binary_columns", [])
-        target_candidates = resp_json.get("target_candidates", [])
-        dataset_analysis = resp_json.get("dataset_analysis", {})
-        
-        if dataset_analysis:
-            with st.expander("🧠 Intelligent Dataset Analysis", expanded=True):
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.write("**📊 Dataset Overview**")
-                    st.write(f"• Total rows: {dataset_analysis.get('total_rows', 'N/A')}")
-                    st.write(f"• Total columns: {dataset_analysis.get('total_columns', 'N/A')}")
-                
-                with col2:
-                    st.write("**🎯 Recommended Columns**")
-                    if detected_sensitive:
-                        st.write(f"• Sensitive features: {', '.join(detected_sensitive[:3])}")
-                    if target_candidates:
-                        st.write(f"• Target candidates: {', '.join(target_candidates[:3])}")
-                
-                with col3:
-                    st.write("**✅ Binary Columns**")
-                    if binary_columns:
-                        st.write(f"• Binary columns: {', '.join(binary_columns[:3])}")
-                    else:
-                        st.write("• No binary columns detected")
-        
-    except Exception as e:
-        st.warning(f"Could not get intelligent analysis from backend: {e}")
-        # Fallback to basic detection
-        detected_sensitive = []
-        binary_columns = []
-        target_candidates = []
-        dataset_analysis = {}
+    if dataset_analysis:
+        with st.expander("🧠 Intelligent Dataset Analysis", expanded=True):
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.write("**📊 Dataset Overview**")
+                st.write(f"• Total rows: {dataset_analysis.get('total_rows', 'N/A')}")
+                st.write(f"• Total columns: {dataset_analysis.get('total_columns', 'N/A')}")
+
+            with col2:
+                st.write("**🎯 Recommended Columns**")
+                if detected_sensitive:
+                    st.write(f"• Sensitive features: {', '.join(detected_sensitive[:3])}")
+                if target_candidates:
+                    st.write(f"• Target candidates: {', '.join(target_candidates[:3])}")
+
+            with col3:
+                st.write("**✅ Binary Columns**")
+                if binary_columns:
+                    st.write(f"• Binary columns: {', '.join(binary_columns[:3])}")
+                else:
+                    st.write("• No binary columns detected")
     
     binary_target_candidates = [col for col in target_candidates if col in binary_columns]
 
