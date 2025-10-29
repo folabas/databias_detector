@@ -2,9 +2,13 @@
 
 A lightweight MVP to upload a CSV dataset, auto-detect sensitive attributes, compute fairness metrics (Demographic Parity Difference, Equal Opportunity Difference), and visualize results.
 
-## Tech Stack
-- Backend: FastAPI, Pandas, Fairlearn, NumPy
-- Frontend: Streamlit, Plotly, Requests
+## Built With
+- Language: Python 3.x
+- Backend: FastAPI, Uvicorn, Pandas, NumPy, Fairlearn
+- Frontend: Streamlit, Plotly
+- Client: Requests
+- Testing: PyTest
+- Config: python-dotenv
 
 ## Project Structure
 ```
