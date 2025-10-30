@@ -128,6 +128,106 @@ def upload_with_delay_handling(uploaded_file, backend_url: str):
 
             time.sleep(0.5)
 
+
+# Configurable wait for delayed backend analyze processing
+def get_analyze_wait_config():
+    try:
+        max_wait = int(st.secrets.get("analyze_max_wait_seconds", 120))
+    except Exception:
+        max_wait = int(os.environ.get("ANALYZE_MAX_WAIT_SECONDS", "120"))
+    try:
+        req_timeout = int(st.secrets.get("analyze_request_timeout_seconds", max_wait))
+    except Exception:
+        req_timeout = int(os.environ.get("ANALYZE_REQUEST_TIMEOUT_SECONDS", str(max_wait)))
+    return max_wait, req_timeout
+
+
+def analyze_with_delay_handling(uploaded_file, data: dict, backend_url: str):
+    """
+    Post the file and payload to /analyze with delay-tolerant UI similar to upload.
+    - Shows status message and countdown progress while waiting
+    - Ends early if backend responds before max wait
+    - Logs actual vs expected timing in session_state
+    - Errors clearly if backend exceeds max wait
+    """
+    max_wait, req_timeout = get_analyze_wait_config()
+
+    status_ph = st.empty()
+    progress_ph = st.progress(0)
+    countdown_ph = st.empty()
+
+    start_time = time.time()
+    if "analyze_timings" not in st.session_state:
+        st.session_state["analyze_timings"] = []
+
+    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/csv")}
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            requests.post,
+            f"{backend_url}/analyze",
+            files=files,
+            data=data,
+            timeout=req_timeout,
+        )
+
+        # Poll until done or until max_wait reached
+        while True:
+            elapsed = time.time() - start_time
+            remaining = int(max(0, max_wait - elapsed))
+            percentage = int(min(100, (elapsed / max_wait) * 100)) if max_wait > 0 else 100
+
+            status_ph.info("Analyzing… the backend may be delayed.")
+            progress_ph.progress(percentage)
+            countdown_ph.write(f"Waiting: {remaining}s remaining")
+
+            if future.done():
+                try:
+                    resp = future.result()
+                    resp_json = resp.json()
+                    total = time.time() - start_time
+                    st.session_state["analyze_timings"].append(
+                        {
+                            "expected_wait": max_wait,
+                            "actual_elapsed": round(total, 2),
+                            "completed": True,
+                            "status_code": resp.status_code,
+                        }
+                    )
+                    status_ph.success(f"Analysis completed in {int(total)}s.")
+                    progress_ph.progress(100)
+                    countdown_ph.write(f"Completed in {int(total)}s (expected {max_wait}s)")
+                    return resp_json
+                except Exception as e:
+                    total = time.time() - start_time
+                    st.session_state["analyze_timings"].append(
+                        {
+                            "expected_wait": max_wait,
+                            "actual_elapsed": round(total, 2),
+                            "completed": False,
+                            "error": str(e),
+                        }
+                    )
+                    status_ph.error(f"Analysis failed: {e}")
+                    return None
+
+            if elapsed >= max_wait:
+                total = time.time() - start_time
+                st.session_state["analyze_timings"].append(
+                    {
+                        "expected_wait": max_wait,
+                        "actual_elapsed": round(total, 2),
+                        "completed": False,
+                        "error": "max_wait_exceeded",
+                    }
+                )
+                status_ph.error(
+                    "Analysis exceeded the maximum wait time. Please try again or increase the wait limit."
+                )
+                return None
+
+            time.sleep(0.5)
+
 st.set_page_config(page_title="DataBias Detector", page_icon="🧮", layout="wide")
 
 st.title("🧮 DataBias Detector")
@@ -251,16 +351,13 @@ if uploaded_file:
                 st.write("Target will be used as proxy")
 
     if st.button("Analyze Bias", type="primary"):
-        st.info("Analyzing…")
-        files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/csv")}
         data = {"sensitive_feature": sensitive_feature, "target": target_col}
         if predictions_col and predictions_col != "<none>":
             data["predictions_col"] = predictions_col
-        try:
-            res = requests.post(f"{BACKEND_URL}/analyze", files=files, data=data, timeout=60)
-            result = res.json()
-        except Exception as e:
-            st.error(f"Request failed: {e}")
+
+        result = analyze_with_delay_handling(uploaded_file, data, BACKEND_URL)
+        if result is None:
+            st.error("Analyze processing exceeded the maximum wait or failed.")
             st.stop()
         if result.get("error"):
             st.error(result["error"])
